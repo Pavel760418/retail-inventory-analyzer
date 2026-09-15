@@ -47,120 +47,6 @@ st.set_page_config(
 
 DISPLAY_ROW_LIMIT = 5_000
 
-# Robot / AI-agent loading animation (CSS only — no external assets)
-_AGENT_CSS = """
-<style>
-@keyframes nia-bob {
-  0%, 100% { transform: translateY(0); }
-  50% { transform: translateY(-10px); }
-}
-@keyframes nia-blink {
-  0%, 90%, 100% { opacity: 1; }
-  95% { opacity: 0.15; }
-}
-@keyframes nia-pulse {
-  0%, 100% { box-shadow: 0 0 0 0 rgba(30, 90, 160, 0.35); }
-  50% { box-shadow: 0 0 0 12px rgba(30, 90, 160, 0); }
-}
-.nia-agent-wrap {
-  display: flex;
-  align-items: center;
-  gap: 1.1rem;
-  padding: 1rem 1.25rem;
-  margin: 0.5rem 0 1rem 0;
-  border-radius: 12px;
-  background: linear-gradient(135deg, #eef4fb 0%, #f7fafc 55%, #e8f0f8 100%);
-  border: 1px solid #c5d6e8;
-}
-.nia-robot {
-  width: 56px;
-  height: 64px;
-  flex-shrink: 0;
-  animation: nia-bob 1.4s ease-in-out infinite;
-}
-.nia-robot-head {
-  width: 40px;
-  height: 32px;
-  margin: 0 auto;
-  background: #1e5aa0;
-  border-radius: 10px 10px 6px 6px;
-  position: relative;
-  animation: nia-pulse 2s ease-in-out infinite;
-}
-.nia-robot-eye {
-  position: absolute;
-  top: 12px;
-  width: 8px;
-  height: 8px;
-  background: #fff;
-  border-radius: 50%;
-  animation: nia-blink 3s ease-in-out infinite;
-}
-.nia-robot-eye.left { left: 8px; }
-.nia-robot-eye.right { right: 8px; }
-.nia-robot-antenna {
-  width: 4px;
-  height: 10px;
-  background: #1e5aa0;
-  margin: 0 auto 2px auto;
-  border-radius: 2px;
-  position: relative;
-}
-.nia-robot-antenna::after {
-  content: "";
-  position: absolute;
-  top: -6px;
-  left: -3px;
-  width: 10px;
-  height: 10px;
-  background: #3d8bfd;
-  border-radius: 50%;
-}
-.nia-robot-body {
-  width: 48px;
-  height: 22px;
-  margin: 4px auto 0 auto;
-  background: #2a6bb5;
-  border-radius: 6px;
-}
-.nia-agent-text {
-  font-size: 1.05rem;
-  color: #1a365d;
-  font-weight: 600;
-  line-height: 1.35;
-}
-.nia-agent-sub {
-  font-size: 0.85rem;
-  color: #4a5568;
-  font-weight: 400;
-  margin-top: 0.25rem;
-}
-</style>
-"""
-
-
-def _render_agent_banner(message: str, sub: str = "Обычно 30–90 секунд. Метрики появятся сразу после расчёта.") -> None:
-    st.markdown(_AGENT_CSS, unsafe_allow_html=True)
-    st.markdown(
-        f"""
-<div class="nia-agent-wrap">
-  <div class="nia-robot" aria-hidden="true">
-    <div class="nia-robot-antenna"></div>
-    <div class="nia-robot-head">
-      <span class="nia-robot-eye left"></span>
-      <span class="nia-robot-eye right"></span>
-    </div>
-    <div class="nia-robot-body"></div>
-  </div>
-  <div>
-    <div class="nia-agent-text">{message}</div>
-    <div class="nia-agent-sub">{sub}</div>
-  </div>
-</div>
-        """,
-        unsafe_allow_html=True,
-    )
-
 
 def _save_bytes(data: bytes, suffix: str) -> Path:
     tmp = tempfile.NamedTemporaryFile(delete=False, suffix=suffix)
@@ -422,25 +308,28 @@ def render_excel_tab(result, show_tech: bool = False):
     if not ready:
         st.info("Excel ещё не сформирован. Нажмите кнопку — один проход сборки отчёта.")
         if st.button("Сформировать Excel-отчёт", type="primary", key="build_excel_btn"):
-            _render_agent_banner(
-                "AI-агент формирует Excel-отчёт…",
-                "Один проход сборки листов. После готовности появится кнопка скачивания.",
-            )
-            progress = st.progress(0, text="Подготовка Excel…")
+            # Native Streamlit widgets only — custom HTML + rerun caused removeChild React errors
+            with st.status("🤖 AI-агент формирует Excel-отчёт…", expanded=True) as status:
+                progress = st.progress(0, text="Подготовка Excel…")
 
-            def _cb(v: float, text: str) -> None:
-                progress.progress(min(max(int(v * 100), 0), 100), text=text)
+                def _cb(v: float, text: str) -> None:
+                    status.write(text)
+                    progress.progress(min(max(int(v * 100), 0), 100), text=text)
 
-            try:
-                result = ensure_excel_bytes(result, progress_cb=_cb)
-                st.session_state["analysis_result"] = result
-                progress.progress(100, text="Excel готов")
-                st.rerun()
-            except Exception as exc:
-                st.error(f"Не удалось сформировать Excel: {exc}")
-                if show_tech:
-                    st.code(traceback.format_exc())
-        return
+                try:
+                    result = ensure_excel_bytes(result, progress_cb=_cb)
+                    st.session_state["analysis_result"] = result
+                    progress.progress(100, text="Excel готов")
+                    status.update(label="🤖 Excel-отчёт готов", state="complete")
+                    ready = True
+                except Exception as exc:
+                    status.update(label="Ошибка формирования Excel", state="error")
+                    st.error(f"Не удалось сформировать Excel: {exc}")
+                    if show_tech:
+                        st.code(traceback.format_exc())
+                    return
+        if not ready:
+            return
 
     ts = datetime.datetime.now().strftime("%Y-%m-%d_%H%M")
     fname = f"Анализ_инвентаризации_{ts}.xlsx"
@@ -540,35 +429,37 @@ def main() -> None:
 
     if st.session_state.get("pending_run"):
         st.session_state["pending_run"] = False
-        _render_agent_banner(
-            "AI-агент выполняет работу и готовит анализ…",
-            "Парсинг, сверка иерархии, метрики и оприходование. Excel соберём отдельно во вкладке «Excel-отчёт».",
-        )
-        progress = st.progress(0, text="AI-агент приступает к работе…")
-
-        def _cb(v: float, text: str) -> None:
-            progress.progress(min(max(int(v * 100), 0), 100), text=text)
-
         inv_path = _save_bytes(st.session_state["inv_bytes"], Path(st.session_state["inv_name"]).suffix or ".xlsx")
         cap_path = _save_bytes(st.session_state["cap_bytes"], Path(st.session_state["cap_name"]).suffix or ".xlsx")
         try:
-            result = run_ui_analysis(
-                str(inv_path),
-                str(cap_path),
-                period_days=int(period_days),
-                end_date=end_date if isinstance(end_date, datetime.date) else None,
-                enable_cross_store=bool(enable_cross),
-                source_names=(st.session_state["inv_name"], st.session_state["cap_name"]),
-                inv_bytes=st.session_state["inv_bytes"],
-                cap_bytes=st.session_state["cap_bytes"],
-                progress_cb=_cb,
-            )
-            progress.progress(100, text="Анализ готов")
-            # Persist BEFORE any further UI work — survives Cloud timeout on later Excel
-            st.session_state["analysis_result"] = result
-            st.session_state["analysis_fp"] = result.source_fingerprint
+            # Native st.status only (no custom HTML / st.rerun) — avoids React removeChild crashes
+            with st.status("🤖 AI-агент выполняет работу и готовит анализ…", expanded=True) as status:
+                st.caption(
+                    "Парсинг, сверка иерархии, метрики и оприходование. "
+                    "Excel — отдельно во вкладке «Excel-отчёт»."
+                )
+                progress = st.progress(0, text="AI-агент приступает к работе…")
+
+                def _cb(v: float, text: str) -> None:
+                    status.write(text)
+                    progress.progress(min(max(int(v * 100), 0), 100), text=text)
+
+                result = run_ui_analysis(
+                    str(inv_path),
+                    str(cap_path),
+                    period_days=int(period_days),
+                    end_date=end_date if isinstance(end_date, datetime.date) else None,
+                    enable_cross_store=bool(enable_cross),
+                    source_names=(st.session_state["inv_name"], st.session_state["cap_name"]),
+                    inv_bytes=st.session_state["inv_bytes"],
+                    cap_bytes=st.session_state["cap_bytes"],
+                    progress_cb=_cb,
+                )
+                progress.progress(100, text="Анализ готов")
+                st.session_state["analysis_result"] = result
+                st.session_state["analysis_fp"] = result.source_fingerprint
+                status.update(label="🤖 Анализ готов", state="complete")
             st.success("Анализ завершён. Показаны ключевые метрики. Excel — во вкладке «Excel-отчёт».")
-            st.rerun()
         except Exception as exc:
             st.error(f"Ошибка анализа: {exc}")
             if show_tech:
