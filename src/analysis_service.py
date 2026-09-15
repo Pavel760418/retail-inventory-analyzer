@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""Analysis orchestration for Streamlit — wraps existing business logic, no recalc."""
+"""Analysis orchestration for Streamlit — single-pass UI metrics; Excel on demand."""
 from __future__ import annotations
 
 import datetime
@@ -7,7 +7,7 @@ import tempfile
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 import pandas as pd
 
@@ -23,6 +23,7 @@ from src.author import (
 )
 from src.capitalization import (
     capitalization_summary,
+    enrich_store_metrics_with_capitalization,
     match_capitalization_to_inventory,
     parse_capitalization_excel,
 )
@@ -37,6 +38,10 @@ from src.metrics import (
 from src.models import Config, ParseMeta
 from src.overlap import build_analytical_cross_store, build_operational_overlaps
 from src.parser import filter_by_period, parse_network_excel
+from src.text_normalize import sku_key as make_sku_key
+
+
+ProgressCb = Optional[Callable[[float, str], None]]
 
 
 @dataclass
@@ -80,10 +85,24 @@ class AnalysisResult:
     excel_seconds: float
     period_str: str
     source_fingerprint: str
+    excel_pending: bool = False
+    # Kept only in session for lazy Excel (not required for KPI display)
+    _inv_bytes: bytes = field(default=b"", repr=False)
+    _cap_bytes: bytes = field(default=b"", repr=False)
+    _inv_name: str = ""
+    _cap_name: str = ""
+    _period_days: int = 30
+    _end_date: Optional[datetime.date] = None
+    _enable_cross_store: bool = False
 
 
 def _fingerprint(*names: str) -> str:
-    return "|".join(names)
+    return "|".join(str(n) for n in names)
+
+
+def _progress(cb: ProgressCb, value: float, text: str) -> None:
+    if cb:
+        cb(value, text)
 
 
 def _build_quality(df_raw_len: int, df: pd.DataFrame, um: pd.DataFrame, anom_sum: Dict) -> QualityReport:
@@ -119,12 +138,11 @@ def _build_quality(df_raw_len: int, df: pd.DataFrame, um: pd.DataFrame, anom_sum
             "количество": str(q.anomaly_critical),
             "исправление": "Заполните книжную нормативную и фактическую суммы в 1С.",
         })
-    # Soft pass: structural parse succeeded; issues are informational
     q.passed = q.empty_name_rows == 0
     return q
 
 
-def run_full_analysis(
+def run_ui_analysis(
     inventory_path: str,
     capitalization_path: str,
     *,
@@ -132,28 +150,42 @@ def run_full_analysis(
     end_date: Optional[datetime.date] = None,
     enable_cross_store: bool = False,
     source_names: Optional[Tuple[str, str]] = None,
+    inv_bytes: bytes = b"",
+    cap_bytes: bytes = b"",
+    progress_cb: ProgressCb = None,
 ) -> AnalysisResult:
-    """Run existing pipeline steps and produce UI metrics + Excel bytes."""
+    """Single-pass metrics for Streamlit UI. Does NOT call build_report (avoids 2× work)."""
+    _progress(progress_cb, 0.08, "AI-агент читает инвентаризацию…")
     df, meta = parse_network_excel(inventory_path)
     raw_len = int(meta.sku_count or len(df))
     if "автор_дока" not in df.columns:
         df = enrich_author_columns(df)
+    if "sku_key" not in df.columns:
+        df["sku_key"] = df["наименование"].map(make_sku_key)
 
+    _progress(progress_cb, 0.18, "AI-агент фильтрует период…")
     end = end_date or meta.date_max
     df = filter_by_period(df, period_days, end)
     if df.empty:
-        raise ValueError("После фильтрации по периоду не осталось данных. Увеличьте период или проверьте даты документов.")
+        raise ValueError(
+            "После фильтрации по периоду не осталось данных. "
+            "Увеличьте период или проверьте даты документов."
+        )
 
     p_start = df.attrs.get("period_start", meta.date_min)
     p_end = df.attrs.get("period_end", meta.date_max)
     period_str = f"{p_start.strftime('%d.%m.%Y')} — {p_end.strftime('%d.%m.%Y')}"
 
+    _progress(progress_cb, 0.28, "AI-агент сопоставляет эталон иерархии…")
     df = enrich_dataframe(df, load_catalog(None))
     um = unmatched_summary(df)
 
+    _progress(progress_cb, 0.45, "AI-агент считает перекрытия и метрики…")
     overlap_op = build_operational_overlaps(df)
     overlap_op = annotate_overlap_authors(overlap_op, df)
+    # Cross-store is expensive (pairwise) — only if explicitly enabled
     if enable_cross_store:
+        _progress(progress_cb, 0.55, "AI-агент считает аналитику между магазинами…")
         _ = build_analytical_cross_store(df)
 
     store_metrics = calc_store_metrics(df, overlap_op)
@@ -161,6 +193,7 @@ def run_full_analysis(
     chronic = sku_cross[sku_cross["chronic"]]
     summary = calc_network_summary(df, overlap_op)
 
+    _progress(progress_cb, 0.65, "AI-агент ищет аномалии и разрез ревизор/оператор…")
     anom_df = detect_book_sum_anomalies(df)
     anom_sum = anomalies_summary(anom_df, total_rows=len(df))
     author_role = calc_author_role_stats(df, overlap_op)
@@ -169,9 +202,11 @@ def run_full_analysis(
     author_sum = author_network_summary(author_role, author_store, author_chains)
     store_metrics = enrich_store_metrics_with_authors(store_metrics, author_store)
 
+    _progress(progress_cb, 0.80, "AI-агент сверяет оприходование излишков…")
     cap_raw = parse_capitalization_excel(capitalization_path)
     cap_matched = match_capitalization_to_inventory(cap_raw, df)
     cap_sum = capitalization_summary(cap_matched)
+    store_metrics = enrich_store_metrics_with_capitalization(store_metrics, cap_matched)
 
     conclusions = generate_conclusions(
         summary, store_metrics, chronic,
@@ -182,34 +217,9 @@ def run_full_analysis(
     quality = _build_quality(raw_len, df, um, anom_sum)
 
     names = source_names or (meta.file_name, Path(capitalization_path).name)
-    fp = _fingerprint(*names, period_str, str(period_days))
+    fp = _fingerprint(*names, period_str, str(period_days), str(bool(enable_cross_store)))
 
-    tmp = tempfile.NamedTemporaryFile(suffix=".xlsx", delete=False)
-    out_path = tmp.name
-    tmp.close()
-    t0 = time.perf_counter()
-    try:
-        cfg = Config(
-            input_path=inventory_path,
-            output_path=out_path,
-            period_days=period_days,
-            end_date=end_date,
-            enable_cross_store=enable_cross_store,
-            capitalization_path=capitalization_path,
-        )
-        build_report(cfg)
-        excel_bytes = Path(out_path).read_bytes()
-        from openpyxl import load_workbook
-        wb = load_workbook(out_path, read_only=True)
-        n_sheets = len(wb.sheetnames)
-        wb.close()
-    finally:
-        try:
-            Path(out_path).unlink(missing_ok=True)
-        except OSError:
-            pass
-    elapsed = time.perf_counter() - t0
-
+    _progress(progress_cb, 0.95, "AI-агент готовит экран с результатами…")
     return AnalysisResult(
         df=df,
         meta=meta,
@@ -228,9 +238,106 @@ def run_full_analysis(
         cap_sum=cap_sum,
         conclusions=conclusions,
         quality=quality,
-        excel_bytes=excel_bytes,
-        excel_sheets=n_sheets,
-        excel_seconds=elapsed,
+        excel_bytes=b"",
+        excel_sheets=0,
+        excel_seconds=0.0,
         period_str=period_str,
         source_fingerprint=fp,
+        excel_pending=True,
+        _inv_bytes=inv_bytes,
+        _cap_bytes=cap_bytes,
+        _inv_name=names[0] if names else "inventory.xlsx",
+        _cap_name=names[1] if len(names) > 1 else "cap.xlsx",
+        _period_days=period_days,
+        _end_date=end_date,
+        _enable_cross_store=enable_cross_store,
     )
+
+
+def ensure_excel_bytes(result: AnalysisResult, progress_cb: ProgressCb = None) -> AnalysisResult:
+    """Build Excel once (same build_report as CLI). Called lazily from Excel tab."""
+    if result.excel_bytes and not result.excel_pending:
+        return result
+    if not result._inv_bytes or not result._cap_bytes:
+        raise ValueError("Нет исходных файлов в сессии для формирования Excel. Запустите анализ снова.")
+
+    _progress(progress_cb, 0.1, "AI-агент формирует Excel-отчёт…")
+    inv_path = None
+    cap_path = None
+    out_path = None
+    t0 = time.perf_counter()
+    try:
+        inv_tmp = tempfile.NamedTemporaryFile(delete=False, suffix=Path(result._inv_name).suffix or ".xlsx")
+        inv_tmp.write(result._inv_bytes)
+        inv_tmp.flush()
+        inv_tmp.close()
+        inv_path = inv_tmp.name
+
+        cap_tmp = tempfile.NamedTemporaryFile(delete=False, suffix=Path(result._cap_name).suffix or ".xlsx")
+        cap_tmp.write(result._cap_bytes)
+        cap_tmp.flush()
+        cap_tmp.close()
+        cap_path = cap_tmp.name
+
+        out_tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".xlsx")
+        out_path = out_tmp.name
+        out_tmp.close()
+
+        cfg = Config(
+            input_path=inv_path,
+            output_path=out_path,
+            period_days=result._period_days,
+            end_date=result._end_date,
+            enable_cross_store=result._enable_cross_store,
+            capitalization_path=cap_path,
+        )
+        _progress(progress_cb, 0.35, "AI-агент собирает листы отчёта (один проход)…")
+        build_report(cfg)
+        excel_bytes = Path(out_path).read_bytes()
+        from openpyxl import load_workbook
+        wb = load_workbook(out_path, read_only=True)
+        n_sheets = len(wb.sheetnames)
+        wb.close()
+    finally:
+        for p in (inv_path, cap_path, out_path):
+            if p:
+                try:
+                    Path(p).unlink(missing_ok=True)
+                except OSError:
+                    pass
+
+    elapsed = time.perf_counter() - t0
+    result.excel_bytes = excel_bytes
+    result.excel_sheets = n_sheets
+    result.excel_seconds = elapsed
+    result.excel_pending = False
+    # Drop heavy copies after excel built to free session memory
+    result._inv_bytes = b""
+    result._cap_bytes = b""
+    _progress(progress_cb, 1.0, "Excel готов")
+    return result
+
+
+def run_full_analysis(
+    inventory_path: str,
+    capitalization_path: str,
+    *,
+    period_days: int = 30,
+    end_date: Optional[datetime.date] = None,
+    enable_cross_store: bool = False,
+    source_names: Optional[Tuple[str, str]] = None,
+) -> AnalysisResult:
+    """Backward-compatible: UI metrics + Excel in one call (slower). Prefer run_ui_analysis."""
+    inv_bytes = Path(inventory_path).read_bytes()
+    cap_bytes = Path(capitalization_path).read_bytes()
+    result = run_ui_analysis(
+        inventory_path,
+        capitalization_path,
+        period_days=period_days,
+        end_date=end_date,
+        enable_cross_store=enable_cross_store,
+        source_names=source_names,
+        inv_bytes=inv_bytes,
+        cap_bytes=cap_bytes,
+    )
+    return ensure_excel_bytes(result)
