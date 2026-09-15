@@ -73,3 +73,6 @@ temp/
 .netlify/
 Thumbs.db
 Desktop.ini
+
+scripts/audit_*.py
+scripts/build_release2_summary_docx.py
