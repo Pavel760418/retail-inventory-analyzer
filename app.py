@@ -238,26 +238,13 @@ def render_sidebar():
         max_value=365,
         value=int(settings.period_days or PERIOD_DAYS),
     )
-    enable_cross = st.sidebar.checkbox(
-        "Аналитика между магазинами",
-        value=False,
-        help="Медленно на больших файлах.",
-    )
-    if enable_cross:
-        st.sidebar.warning("Межмагазинная аналитика сильно замедляет расчёт.")
-    use_custom_end = st.sidebar.checkbox("Задать конечную дату", value=False)
+    # Advanced options hidden from employee UI (defaults are safe/fast):
+    # enable_cross_store=False, end_date=None, show_tech=False
+    enable_cross = False
     end_date = None
-    if use_custom_end:
-        end_date = st.sidebar.date_input("Конечная дата", value=datetime.date.today())
-
-    show_tech = st.sidebar.checkbox("Показывать технические детали", value=False)
+    show_tech = False
     run = st.sidebar.button("Запустить анализ", type="primary", use_container_width=True)
 
-    st.sidebar.markdown("---")
-    st.sidebar.caption(
-        "Ревизор = документ ровно в 08:00:00. Проверка цен отключена. "
-        "Файлы не сохраняются на сервере после сессии."
-    )
     return inv, cap, period_days, enable_cross, end_date, show_tech, run
 
 
@@ -305,7 +292,7 @@ def render_home(result):
                 st.metric(card["label"], card["value"], delta=card["delta"], help=card["help"])
                 st.markdown("</div>", unsafe_allow_html=True)
 
-    st.markdown("## Выводы (как лист «Выводы» в Excel)")
+    st.markdown("## Выводы")
     concl = conclusions_cards(result)
     if concl:
         for c in concl[:6]:
