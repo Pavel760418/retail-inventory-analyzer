@@ -1,0 +1,75 @@
+# Environment / secrets
+.env
+.env.local
+*.env
+!.env.example
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+venv/
+.venv/
+env/
+
+# IDE / agents
+.idea/
+.vscode/
+.continue/
+.agents/
+*.swp
+*.swo
+.DS_Store
+
+# Tests / coverage
+.pytest_cache/
+.coverage
+htmlcov/
+.mypy_cache/
+.ruff_cache/
+
+# Streamlit
+.streamlit/secrets.toml
+
+# Operational Excel / CSV dumps (do NOT commit real inventory)
+*.xlsx
+*.xls
+*.csv
+!data/samples/.gitkeep
+!sample_data/.gitkeep
+# master hierarchy MUST be committed (json); csv dump of hierarchy also allowed if present:
+!data/master_hierarchy.csv
+
+# Outputs / temp
+_analysis_output/
+output/
+exports/
+reports/
+uploads/
+tmp/
+temp/
+*.log
+*.docx
+
+# Netlify / misc
+.Netlify/
+.netlify/
+Thumbs.db
+Desktop.ini
