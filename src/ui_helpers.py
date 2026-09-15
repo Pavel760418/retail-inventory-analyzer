@@ -19,9 +19,10 @@ def kpi_cards(result: AnalysisResult) -> List[Dict[str, Any]]:
     total_abs = shortage + surplus
     share = (disc / lines * 100.0) if lines else 0.0
     critical = int(result.anom_sum.get("critical", 0) or 0)
-    # Critical positions also include chronic SKUs and class-C stores
     chronic_n = int(len(result.chronic)) if result.chronic is not None else 0
     crit_positions = critical + chronic_n
+    clean = float(s.get("clean_shortage", 0) or 0)
+    overlap = float(s.get("overlap", 0) or 0)
 
     return [
         {
@@ -29,38 +30,90 @@ def kpi_cards(result: AnalysisResult) -> List[Dict[str, Any]]:
             "value": f"{lines:,}",
             "delta": f"с расхождениями: {disc:,}",
             "help": "Число строк номенклатуры в периоде после парсинга TDSheet.",
+            "color": "#1e5aa0",
         },
         {
             "label": "Общая сумма расхождений, ₽",
             "value": f"{total_abs:,.0f}",
             "delta": f"сальдо: {float(s.get('net', 0) or 0):,.0f}",
             "help": "Сумма недостач + сумма излишков (абсолютный масштаб расхождений).",
+            "color": "#6b46c1",
         },
         {
             "label": "Недостача, ₽",
             "value": f"{shortage:,.0f}",
-            "delta": f"чистые: {float(s.get('clean_shortage', 0) or 0):,.0f}",
-            "help": "Сумма недостач по модулю; «чистые» — после однородного перекрытия.",
+            "delta": f"чистые: {clean:,.0f}",
+            "help": "Сумма недостач; «чистые» — после однородного перекрытия.",
+            "color": "#c53030",
         },
         {
             "label": "Излишки, ₽",
             "value": f"{surplus:,.0f}",
             "delta": f"магазинов: {int(s.get('stores', 0) or 0)}",
             "help": "Сумма излишков по всем магазинам периода.",
+            "color": "#2b6cb0",
         },
         {
-            "label": "Доля проблемных позиций, %",
-            "value": f"{share:.1f}",
-            "delta": f"{disc:,} из {lines:,}",
-            "help": "Доля строк с излишком или недостачей относительно всех проверенных строк.",
+            "label": "Перекрытие (пересорт), ₽",
+            "value": f"{overlap:,.0f}",
+            "delta": f"{float(s.get('recovery_pct', 0) or 0):.1f}% недостач",
+            "help": "Однородный пересорт внутри категории эталона.",
+            "color": "#d69e2e",
+        },
+        {
+            "label": "Чистые недостачи, ₽",
+            "value": f"{clean:,.0f}",
+            "delta": f"доля проблемных: {share:.1f}%",
+            "help": "Недостачи минус перекрытие — ближе к реальному риску потерь.",
+            "color": "#dd6b20",
         },
         {
             "label": "Критичные позиции",
             "value": f"{crit_positions:,}",
             "delta": f"аном.тип2: {critical}; хронич.: {chronic_n}",
-            "help": "Критические аномалии книжных сумм (тип 2) + хронические проблемные SKU.",
+            "help": "Критические аномалии книжных сумм (тип 2) + хронические SKU.",
+            "color": "#9b2c2c",
+        },
+        {
+            "label": "Документов / магазинов",
+            "value": f"{int(s.get('docs', 0) or 0):,} / {int(s.get('stores', 0) or 0)}",
+            "delta": f"период: {result.period_str}",
+            "help": "Масштаб инвентаризации за выбранный период.",
+            "color": "#2f855a",
         },
     ]
+
+
+def summary_finance_block(result: AnalysisResult) -> Dict[str, Any]:
+    """Key finance figures as on Excel sheet «Сводка»."""
+    s = result.summary
+    a = result.author_sum or {}
+    anom = result.anom_sum or {}
+    cap = result.cap_sum or {}
+    return {
+        "period": result.period_str,
+        "stores": int(s.get("stores", 0) or 0),
+        "docs": int(s.get("docs", 0) or 0),
+        "surplus": float(s.get("surplus", 0) or 0),
+        "shortage": float(s.get("shortage", 0) or 0),
+        "overlap": float(s.get("overlap", 0) or 0),
+        "clean": float(s.get("clean_shortage", 0) or 0),
+        "net": float(s.get("net", 0) or 0),
+        "recovery_pct": float(s.get("recovery_pct", 0) or 0),
+        "shrinkage_pct": float(s.get("shrinkage_pct", 0) or 0),
+        "sku_disc": int(s.get("sku_disc", 0) or 0),
+        "anom_total": int(anom.get("total", 0) or 0),
+        "anom_critical": int(anom.get("critical", 0) or 0),
+        "anom_type1": int(anom.get("type1", 0) or 0),
+        "anom_type3": int(anom.get("type3", 0) or 0),
+        "author_dominant": a.get("network_dominant", "—"),
+        "author_sign": a.get("network_sign", ""),
+        "chains_count": int(a.get("chains_count", 0) or 0),
+        "chains_sum": float(a.get("chains_sum", 0) or 0),
+        "cap_sum": float(cap.get("cap_sum", 0) or cap.get("sum", 0) or 0),
+        "cap_matched": int(cap.get("matched", 0) or 0),
+        "cap_with_shortage": int(cap.get("matched_shortage", 0) or 0),
+    }
 
 
 def executive_insights(result: AnalysisResult) -> List[str]:
@@ -79,9 +132,9 @@ def executive_insights(result: AnalysisResult) -> List[str]:
     total = shortage + surplus
     if total > 0:
         lines.append(
-            f"Финансовый масштаб расхождений: недостача {shortage:,.0f} ₽ "
-            f"({shortage / total * 100:.1f}% от суммы |недостача+излишки|), "
-            f"излишки {surplus:,.0f} ₽ ({surplus / total * 100:.1f}%)."
+            f"Финансовый масштаб: недостача {shortage:,.0f} ₽ "
+            f"({shortage / total * 100:.1f}%), излишки {surplus:,.0f} ₽ "
+            f"({surplus / total * 100:.1f}%); сальдо {float(s.get('net', 0) or 0):,.0f} ₽."
         )
     if shortage > 0:
         lines.append(
@@ -115,7 +168,15 @@ def executive_insights(result: AnalysisResult) -> List[str]:
             f"Аномалий книжных сумм: {int(result.anom_sum['total'])} "
             f"(критических тип 2: {int(result.anom_sum.get('critical', 0))})."
         )
-    return lines[:5]
+    return lines[:6]
+
+
+def conclusions_cards(result: AnalysisResult) -> List[Dict[str, str]]:
+    """Cards from generate_conclusions (Excel sheet «Выводы») — most important first."""
+    out: List[Dict[str, str]] = []
+    for title, text in (result.conclusions or [])[:8]:
+        out.append({"title": str(title), "text": str(text)})
+    return out
 
 
 def status_risk_table(result: AnalysisResult) -> pd.DataFrame:
@@ -132,31 +193,31 @@ def status_risk_table(result: AnalysisResult) -> pd.DataFrame:
             crit_sum = float(crit["излишек_сумма"].fillna(0).sum())
     rows = [
         {
-            "Статус": "🔴 Критично (аномалии тип 2)",
+            "Статус": "Критично (аномалии тип 2)",
             "Количество позиций": int(result.anom_sum.get("critical", 0) or 0),
             "Сумма, ₽": crit_sum,
             "Действие": "Заполнить книжные суммы в 1С, пересчитать документ",
         },
         {
-            "Статус": "🟠 Недостача",
+            "Статус": "Недостача",
             "Количество позиций": shortage_n,
             "Сумма, ₽": float(s.get("shortage", 0) or 0),
             "Действие": "Сверить пересорт / приходы / лист «Мероприятия»",
         },
         {
-            "Статус": "🟡 Излишек",
+            "Статус": "Излишек",
             "Количество позиций": surplus_n,
             "Сумма, ₽": float(s.get("surplus", 0) or 0),
             "Действие": "Проверить однородность и оприходование смены",
         },
         {
-            "Статус": "🟠 Чистые недостачи",
+            "Статус": "Чистые недостачи",
             "Количество позиций": "—",
             "Сумма, ₽": float(s.get("clean_shortage", 0) or 0),
             "Действие": "Приоритет контроля: не объяснены однородным пересортом",
         },
         {
-            "Статус": "🟢 Без отклонений",
+            "Статус": "Без отклонений",
             "Количество позиций": max(ok_n, 0),
             "Сумма, ₽": 0.0,
             "Действие": "Контроль не требуется",
@@ -183,6 +244,98 @@ def top_shortage_chart_df(result: AnalysisResult, n: int = 10) -> pd.DataFrame:
     )
 
 
+def top_surplus_chart_df(result: AnalysisResult, n: int = 10) -> pd.DataFrame:
+    sc = result.sku_cross
+    if sc is None or sc.empty or "излишки" not in sc.columns:
+        return pd.DataFrame()
+    top = sc[sc["излишки"] > 0].sort_values("излишки", ascending=False).head(n)
+    if top.empty:
+        return pd.DataFrame()
+    return top[["наименование", "излишки"]].rename(
+        columns={"наименование": "Позиция", "излишки": "Излишек, ₽"}
+    )
+
+
+def top_overlap_chart_df(result: AnalysisResult, n: int = 10) -> pd.DataFrame:
+    ov = result.overlap_op
+    if ov is None or ov.empty or "перекрытие_сум" not in ov.columns:
+        return pd.DataFrame()
+    top = ov.sort_values("перекрытие_сум", ascending=False).head(n).copy()
+    if "излишек_товар" in top.columns and "недостача_товар" in top.columns:
+        top["Пара"] = (
+            top["излишек_товар"].astype(str).str.slice(0, 28)
+            + " ↔ "
+            + top["недостача_товар"].astype(str).str.slice(0, 28)
+        )
+    else:
+        top["Пара"] = top.index.astype(str)
+    return top[["Пара", "перекрытие_сум"]].rename(columns={"перекрытие_сум": "Перекрытие, ₽"})
+
+
+def store_risk_chart_df(result: AnalysisResult, n: int = 12) -> pd.DataFrame:
+    sm = result.store_metrics
+    if sm is None or sm.empty or "чистые_недостачи" not in sm.columns:
+        return pd.DataFrame()
+    top = sm.sort_values("чистые_недостачи", ascending=False).head(n)
+    return top[["магазин", "чистые_недостачи"]].rename(
+        columns={"магазин": "Магазин", "чистые_недостачи": "Чистые недостачи, ₽"}
+    )
+
+
+def store_ranking_df(result: AnalysisResult) -> pd.DataFrame:
+    sm = result.store_metrics
+    if sm is None or sm.empty:
+        return pd.DataFrame()
+    cols = [c for c in [
+        "место", "магазин", "класс", "store_score", "излишки", "недостачи",
+        "сальдо", "перекрытие", "чистые_недостачи",
+    ] if c in sm.columns]
+    out = sm[cols].copy()
+    rename = {
+        "место": "Место", "магазин": "Магазин", "класс": "Класс",
+        "store_score": "Балл", "излишки": "Излишки", "недостачи": "Недостачи",
+        "сальдо": "Сальдо", "перекрытие": "Перекрытие",
+        "чистые_недостачи": "Чист. недостачи",
+    }
+    return out.rename(columns=rename)
+
+
+def author_role_chart_df(result: AnalysisResult) -> pd.DataFrame:
+    ar = result.author_role
+    if ar is None or ar.empty:
+        return pd.DataFrame()
+    # Flexible column names from calc_author_role_stats
+    name_col = "автор" if "автор" in ar.columns else ("роль" if "роль" in ar.columns else None)
+    if name_col is None:
+        return pd.DataFrame()
+    short_col = next((c for c in ("недостачи", "недостача", "недостача_сумма") if c in ar.columns), None)
+    sur_col = next((c for c in ("излишки", "излишек", "излишек_сумма") if c in ar.columns), None)
+    if not short_col:
+        return pd.DataFrame()
+    rows = []
+    for _, r in ar.iterrows():
+        role = str(r[name_col])
+        if short_col:
+            rows.append({"Роль": role, "Тип": "Недостачи", "Сумма, ₽": float(r[short_col] or 0)})
+        if sur_col:
+            rows.append({"Роль": role, "Тип": "Излишки", "Сумма, ₽": float(r[sur_col] or 0)})
+    return pd.DataFrame(rows)
+
+
+def author_shortage_share_df(result: AnalysisResult) -> pd.DataFrame:
+    ar = result.author_role
+    if ar is None or ar.empty:
+        return pd.DataFrame()
+    name_col = "автор" if "автор" in ar.columns else ("роль" if "роль" in ar.columns else None)
+    short_col = next((c for c in ("недостачи", "недостача", "недостача_сумма") if c in ar.columns), None)
+    if not name_col or not short_col:
+        return pd.DataFrame()
+    out = ar[[name_col, short_col]].copy()
+    out = out.rename(columns={name_col: "Роль", short_col: "Недостачи, ₽"})
+    out = out[out["Недостачи, ₽"] > 0]
+    return out
+
+
 def discrepancy_structure_df(result: AnalysisResult) -> pd.DataFrame:
     s = result.summary
     return pd.DataFrame({
@@ -194,16 +347,6 @@ def discrepancy_structure_df(result: AnalysisResult) -> pd.DataFrame:
             float(s.get("clean_shortage", 0) or 0),
         ],
     })
-
-
-def store_risk_chart_df(result: AnalysisResult, n: int = 12) -> pd.DataFrame:
-    sm = result.store_metrics
-    if sm is None or sm.empty or "чистые_недостачи" not in sm.columns:
-        return pd.DataFrame()
-    top = sm.sort_values("чистые_недостачи", ascending=False).head(n)
-    return top[["магазин", "чистые_недостачи"]].rename(
-        columns={"магазин": "Магазин", "чистые_недостачи": "Чистые недостачи, ₽"}
-    )
 
 
 def detail_table(result: AnalysisResult) -> pd.DataFrame:

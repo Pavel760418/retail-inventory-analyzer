@@ -155,15 +155,16 @@ def run_ui_analysis(
     progress_cb: ProgressCb = None,
 ) -> AnalysisResult:
     """Single-pass metrics for Streamlit UI. Does NOT call build_report (avoids 2× work)."""
-    _progress(progress_cb, 0.08, "AI-агент читает инвентаризацию…")
+    _progress(progress_cb, 0.04, "AI-агент открывает файл инвентаризации…")
     df, meta = parse_network_excel(inventory_path)
     raw_len = int(meta.sku_count or len(df))
+    _progress(progress_cb, 0.10, f"AI-агент загрузил {raw_len:,} строк, размечает авторов документов…")
     if "автор_дока" not in df.columns:
         df = enrich_author_columns(df)
     if "sku_key" not in df.columns:
         df["sku_key"] = df["наименование"].map(make_sku_key)
 
-    _progress(progress_cb, 0.18, "AI-агент фильтрует период…")
+    _progress(progress_cb, 0.16, "AI-агент фильтрует документы по выбранному периоду…")
     end = end_date or meta.date_max
     df = filter_by_period(df, period_days, end)
     if df.empty:
@@ -176,38 +177,43 @@ def run_ui_analysis(
     p_end = df.attrs.get("period_end", meta.date_max)
     period_str = f"{p_start.strftime('%d.%m.%Y')} — {p_end.strftime('%d.%m.%Y')}"
 
-    _progress(progress_cb, 0.28, "AI-агент сопоставляет эталон иерархии…")
+    _progress(progress_cb, 0.24, "AI-агент сопоставляет номенклатуру с эталоном иерархии…")
     df = enrich_dataframe(df, load_catalog(None))
     um = unmatched_summary(df)
 
-    _progress(progress_cb, 0.45, "AI-агент считает перекрытия и метрики…")
+    _progress(progress_cb, 0.34, "AI-агент ищет однородные пересорты (перекрытия)…")
     overlap_op = build_operational_overlaps(df)
+    _progress(progress_cb, 0.42, "AI-агент привязывает пересорты к ролям ревизор/оператор…")
     overlap_op = annotate_overlap_authors(overlap_op, df)
     # Cross-store is expensive (pairwise) — only if explicitly enabled
     if enable_cross_store:
-        _progress(progress_cb, 0.55, "AI-агент считает аналитику между магазинами…")
+        _progress(progress_cb, 0.48, "AI-агент считает аналитику между магазинами (медленно)…")
         _ = build_analytical_cross_store(df)
 
+    _progress(progress_cb, 0.54, "AI-агент считает рейтинг магазинов и топы SKU…")
     store_metrics = calc_store_metrics(df, overlap_op)
     sku_cross = calc_sku_cross(df)
     chronic = sku_cross[sku_cross["chronic"]]
     summary = calc_network_summary(df, overlap_op)
 
-    _progress(progress_cb, 0.65, "AI-агент ищет аномалии и разрез ревизор/оператор…")
+    _progress(progress_cb, 0.62, "AI-агент проверяет аномалии книжных сумм…")
     anom_df = detect_book_sum_anomalies(df)
     anom_sum = anomalies_summary(anom_df, total_rows=len(df))
+    _progress(progress_cb, 0.70, "AI-агент сравнивает вклад ревизоров и операторов…")
     author_role = calc_author_role_stats(df, overlap_op)
     author_store = calc_author_store_stats(df, overlap_op)
+    _progress(progress_cb, 0.76, "AI-агент строит цепочки пересортов ревизор↔оператор…")
     author_chains = detect_author_chains(df)
     author_sum = author_network_summary(author_role, author_store, author_chains)
     store_metrics = enrich_store_metrics_with_authors(store_metrics, author_store)
 
-    _progress(progress_cb, 0.80, "AI-агент сверяет оприходование излишков…")
+    _progress(progress_cb, 0.84, "AI-агент сверяет оприходование излишков закрытия смены…")
     cap_raw = parse_capitalization_excel(capitalization_path)
     cap_matched = match_capitalization_to_inventory(cap_raw, df)
     cap_sum = capitalization_summary(cap_matched)
     store_metrics = enrich_store_metrics_with_capitalization(store_metrics, cap_matched)
 
+    _progress(progress_cb, 0.90, "AI-агент формулирует выводы для руководителя…")
     conclusions = generate_conclusions(
         summary, store_metrics, chronic,
         cap_summary=cap_sum,
@@ -219,7 +225,7 @@ def run_ui_analysis(
     names = source_names or (meta.file_name, Path(capitalization_path).name)
     fp = _fingerprint(*names, period_str, str(period_days), str(bool(enable_cross_store)))
 
-    _progress(progress_cb, 0.95, "AI-агент готовит экран с результатами…")
+    _progress(progress_cb, 0.96, "AI-агент готовит BI-дашборд с метриками и топами…")
     return AnalysisResult(
         df=df,
         meta=meta,
