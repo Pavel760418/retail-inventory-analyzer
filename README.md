@@ -56,11 +56,26 @@ pytest -q
 - Загрузки пользователя — только tempfile, удаляются после анализа
 - В `sample_data/` — только DEMO/SYNTHETIC
 
+## Публичное приложение (Streamlit Community Cloud)
+
+**URL:** https://retail-inventory-analyzer-69mv6gs2paayemqxpq2iwn.streamlit.app/
+
+Пользователям **не нужны** аккаунты Streamlit или GitHub, VPN, корпоративная сеть
+или приглашение по e-mail — достаточно открыть ссылку в обычном браузере.
+
+Кратко по работе: в боковой панели загрузить два Excel (инвентаризация + оприходование
+излишков) → «Запустить анализ» → KPI / детализация / контроль качества → скачать
+Excel-отчёт на соответствующей вкладке. Реальные файлы в репозиторий не попадают.
+
+Статус доступа и чеклист после деплоя: [docs/ACCESS_INCIDENT_REPORT.md](docs/ACCESS_INCIDENT_REPORT.md),
+[docs/deployment.md](docs/deployment.md).
+
 ## Деплой
 
-См. [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md).
+См. [docs/deployment.md](docs/deployment.md).
 
-Кратко: Streamlit Cloud → New app → GitHub repo → `app.py` → Deploy.
+Кратко: Streamlit Cloud → New app → GitHub repo → `app.py` → Deploy →
+обязательно выставить **public** sharing → проверить URL в инкогнито.
 
 ## Документация
 
